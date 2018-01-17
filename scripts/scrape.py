@@ -85,7 +85,7 @@ def download_file(url, file_path, proxy=None, timeout=Timeout(connect=5, read=20
 
 class ProxyList:
     """Crawl url and generate sitemap"""
-    def __init__(self, file=r"assets\\proxies", logfile="proxy_list_errors.log"):
+    def __init__(self, file=r"assets\proxies", logfile="proxy_list_errors.log"):
         self.checked = set()
         try:
             if os.stat(file).st_mtime < time.time() - 3 * 86400:
@@ -95,13 +95,25 @@ class ProxyList:
         except FileNotFoundError:
             self.logfile = open("logs\\" + logfile, "a")
             self.queue = set()
-            proxy_sources = ["http://www.freeproxylists.com/anonymous.html", "http://www.freeproxylists.com/elite.html",
-                             "http://www.freeproxylists.com/https.html",
-                             "https://www.cool-proxy.net/proxies/http_proxy_list/sort:score/direction:desc",
-                             "https://hidemy.name/en/proxy-list/?maxtime=1500&type=hs#list",
-                             "https://free-proxy-list.net/", "https://www.sslproxies.org/",
-                             "https://free-proxy-list.net/anonymous-proxy.html", "https://premproxy.com/list/",
-                             "http://proxydb.net/?protocol=http&protocol=https"]
+            break_flag = False
+            for i in range(0, 10):
+                ssl = False
+                if i % 2:
+                    response = requests.get("http://pubproxy.com/api/proxy?limit=20&format=txt&type=https")
+                    ssl = True
+                else:
+                    response = requests.get("http://pubproxy.com/api/proxy?limit=20&format=txt&type=http")
+
+                for item in response.text.split("\n"):
+                    if "We have to temporarily stop you" in item:
+                        break_flag = True
+                        break
+                    else:
+                        self.queue.update(["{}://{}".format("https" if ssl else "http", item)])
+
+                if break_flag:
+                    break
+
             response = requests.get("https://raw.githubusercontent.com/stamparm/aux/master/fetch-some-list.txt")
             for item in loads(response.text):
                 try:
@@ -109,6 +121,16 @@ class ProxyList:
                         self.queue.update(["{}://{}:{}".format(item["proto"], item["ip"], item["port"])])
                 except KeyError:
                     pass
+
+            response = requests.get("https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list.txt")
+            for line, item in enumerate(response.text.split("\n")):
+                if 5 < line < 305:
+                    proxy_info = item.split(" ")
+                    try:
+                        proxy = "{}://{}".format("https" if proxy_info[1].endswith("S") else "http", proxy_info[0])
+                        self.queue.update([proxy])
+                    except Exception as e:
+                        print(e)
 
             if gevent_installed:
                 self.pool = pool.Pool(10)
@@ -157,7 +179,7 @@ class ProxyList:
 
     def random(self):
         if len(self.checked):
-             return choice(self.checked)
+            return choice(self.checked)
         else:
             raise ResourceError
 
@@ -569,5 +591,6 @@ class GoogleResultPage:
         return results
 
 
+PLTFRM = compile(r"^(?:https?://)?(?:www\.)?((?:[\w|-]+\.)*[\w|-]+)(?:\.[a-z]+)")
 PRC_PTN = compile("(?i)((?:\d{2,}\s*(?:euro|lei|ron|\$|€|£))|(?:(?:euro|lei|ron|\$|€|£)\s*\d{2,}))")
 LNK_PTN = compile('^(a|button)$', I)

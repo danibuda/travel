@@ -1,6 +1,6 @@
 from database import connection
 from assets import access
-from scripts.manager import ChurchManager, MapClient
+from scripts.manager import MapClient, ScrapeManager
 from scripts.wp_controller import WordPressManager
 from time import gmtime, strftime
 import logging
@@ -27,8 +27,9 @@ if __name__ == '__main__':
     maps = MapClient(access, timeout=5, queries_per_second=100, language='ro')
     session = connection.DataBaseView(access)
 
-    church_manager = ChurchManager(access, session, "http://biserici.org", "C:\\Users\\fabbs\\Desktop\\Churches")
-    church_manager.transfer_table()
+    manager = ScrapeManager(access, maps, session)
+    manager.fix_images(r"C:\Users\fabbs\Desktop\Churches", r"C:\Users\fabbs\Desktop\Test")
+
 
     # wp = WordPressManager(access, session)
     # wp.index_taxonomies()

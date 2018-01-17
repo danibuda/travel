@@ -97,7 +97,7 @@ class City(Base):
     region = Column(String(64))
     check = Column(String(5), nullable=True)
     listings = relationship('BookingListing', backref='listing_city')
-    churches = relationship('Church', backref='church_city')
+    interest_points = relationship('InterestPoint', backref='city')
 
     def __repr__(self):
         return '<City: id: {} name: {}>'.format(self.id, self.name)
@@ -111,7 +111,6 @@ class County(Base):
     name = Column(String(64))
     cities = relationship('City', backref='county')
     listings = relationship('BookingListing', backref='listing_county')
-    churches = relationship('Church', backref='church_county')
 
     def __repr__(self):
         return '<County: id: {}, name: {}, code: {}>'.format(self.id, self.name, self.code)
@@ -152,7 +151,7 @@ class InterestPoint(Base):
     title = Column(String(250), nullable=True)
     city_id = Column(Integer, ForeignKey('account_city.id'), nullable=True)
     types = Column(String(255), nullable=True)
-    additional_types = Column(String(50), nullable=True)
+    wp_post_id = Column(String(50), nullable=True)
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
     website = Column(String(12), nullable=True)

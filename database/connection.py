@@ -20,8 +20,8 @@ class DataBaseView:
         metadata.create_all(bind=engine)
 
     # multiple select
-    def index(self, cls, columns=None, match_filter=None, filter_mode="match", limit=None):
-        """Get all items."""
+    def index(self, cls, match_filter=None, filter_mode="match", columns=None, limit=None):
+        """Get all items. select equivalent"""
         items = self.session.query(cls)
         if columns:
             items = items.options(load_only(*columns))
