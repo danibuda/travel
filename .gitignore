@@ -1,4 +1,5 @@
 assets/access.py
+assets/proxies
 logs/*.log
 sitemaps/*.xml
 .idea/

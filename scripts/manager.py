@@ -1,11 +1,12 @@
 import googlemaps
+import datetime
+import errno
 from random import randint
 from unidecode import unidecode
-from json import dumps
+from json import dumps, loads
 from math import floor
-from re import search, compile
+from re import compile
 from time import sleep, time
-import datetime, errno
 from slugify import slugify
 from .scrape import ProxyList, WebPage, download_file
 from .util import hash_factors, mk_dir
@@ -193,10 +194,8 @@ class ScrapeManager:
                                 pass
                             self.connection.post(church)
 
-    def dump_2(self):
-        if not len(self.items):
-            self.index()
-        for item in self.items:
+    def dump_2(self, items):
+        for item in items:
             default_county = self.connection.get(County, {"code": item[0].replace("/index.php?menu=BI", "")}, "match")
             default_church_count = int(item[1].replace(".", ""))
             existing_church_count = len(self.connection.index(Church, None, {"county_id": default_county.id}, "match"))
@@ -204,7 +203,7 @@ class ScrapeManager:
                 continue
             keys = []
             for i in range(0, int(floor(default_church_count/20)+1)):
-                page = WebPage(self.domain + item[0] + "&start={}&order=".format(i*20))
+                page = WebPage(item[0] + "&start={}&order=".format(i*20))
                 page_table = page.match_elements("table")[0]
                 if len(keys) == 0:
                     for key in page_table.find_all("th"):
@@ -268,9 +267,9 @@ class ScrapeManager:
                 new_values.update({"website": None})
                 platform = PLTFRM.search(int_point.website).group(1)
                 self.connection.post(InterestPointPlatform(geo_hash_id=int_point.geo_hash_id,
-                                                          platform=platform,
-                                                          url=int_point.website,
-                                                          last_modified=timestamp))
+                                                           platform=platform,
+                                                           url=int_point.website,
+                                                           last_modified=timestamp))
             if int_point.telephone:
                 new_values.update({"telephone": None})
                 contact.update({"telephone": int_point.telephone})
@@ -278,17 +277,17 @@ class ScrapeManager:
             if len(contact):
                 contact = dumps(contact, ensure_ascii=False).encode("utf8")
                 self.connection.post(InterestPointFacility(geo_hash_id=int_point.geo_hash_id,
-                                                          type="contact",
-                                                          content=contact))
+                                                           type="contact",
+                                                           content=contact))
 
             if int_point.place_id:
                 new_address = {}
                 place_details = self.map_client.set_place_details(int_point.place_id)
                 try:
                     for component in place_details["address_components"]:
-                         if component["types"][0] in ["route", "locality", "administrative_area_level_2",
-                                                      "administrative_area_level_1", "country"]:
-                             new_address.update({component["types"][0]: component["short_name"]})
+                        if component["types"][0] in ["route", "locality", "administrative_area_level_2",
+                                                     "administrative_area_level_1", "country"]:
+                            new_address.update({component["types"][0]: component["short_name"]})
                 except KeyError:
                     pass
 
@@ -319,11 +318,11 @@ class ScrapeManager:
         churches = self.connection.index(Church, None, {"telephone": "new", "address": None}, "match")
         for church in churches:
             new_values = {}
-            church_page = WebPage(self.domain + church.url, self.proxy_list)
+            church_page = WebPage(church.url, self.proxy_list)
             try:
                 if church_page.status_code != 200:
                     new_values.update({"geo_hash_id": "error"})
-                    print("{} - url error, status: {}".format(self.domain + church.url,
+                    print("{} - url error, status: {}".format(church.url,
                                                               church_page.status_code))
                 else:
                     if not church.address or not church.city_id:
@@ -457,34 +456,66 @@ class ScrapeManager:
                     self.connection.post(i_p)
                     self.connection.put(Church, church.id, {"telephone": "moved"})
 
-    def fix_images(self, folder_path, new_path,new_width=800, new_height=600):
+    def fix_images(self, folder_path, new_path, new_width=800, new_height=600):
         if not folder_path:
             raise Exception("No path specified!")
-        for county_folder in listdir(folder_path):
-            city_folders = join(folder_path, county_folder)
-            for city_folder in listdir(city_folders):
-                churches_folders = join(city_folders, city_folder)
-                for church_folder in listdir(churches_folders):
-                    image_folder = join(churches_folders, church_folder)
-                    for img_file in listdir(image_folder):
-                        output_path = join(new_path, county_folder, city_folder, church_folder)
+        non_cropped = 0
+        counties = self.connection.index(County)
+        for county in counties:
+            county_folder = county.name.lower()
+            cities = self.connection.index(City, {"county_id": county.id})
+            county_folder = join(folder_path, county_folder)
+            for city in cities:
+                city_folder = slugify(city.name)
+                city_folder = join(county_folder, city_folder)
+                interests = self.connection.index(InterestPoint, {"city_id": city.id, "types": "place_of_worship"})
+                for interest in interests:
+                    move_flag = False
+                    info = loads(interest.facilities[0].content)
+
+                    if info["photo_count"] < 2:
+                        continue
+
+                    output_path = join(new_path, county.name.lower(),
+                                       slugify(city.name),
+                                       city.name + " - " + interest.title)
+                    interest_folder = join(city_folder, city.name + " - " + interest.title)
+
+                    if not exists(interest_folder) or not len(listdir(interest_folder)):
+                        old_struc_folder = join(r"C:\Users\fabbs\Desktop\Churches_2",
+                                                slugify(city.name),
+                                                slugify(city.name + " " + interest.title))
+                        if not exists(old_struc_folder):
+                            try:
+                                print(" No img folder found for interest {}: {} !".format(interest.title, interest.id))
+                            except Exception as e:
+                                print(e)
+                            continue
+                        interest_folder, old_struc_folder = old_struc_folder, interest_folder
+                        move_flag = True
+
+                    for img_file in listdir(interest_folder):
                         try:
-                            im = Image.open(join(image_folder, img_file))
+                            im = Image.open(join(interest_folder, img_file))
 
-                            width, height = im.size  # Get
+                            if move_flag:
+                                new_img_path = join(old_struc_folder,  "Cazare_" + city.name.title() + "_" + img_file)
+                                if not exists(dirname(new_img_path)):
+                                    try:
+                                        makedirs(dirname(new_img_path))
+                                    except OSError as exc:  # Guard against race condition
+                                        if exc.errno != errno.EEXIST:
+                                            raise
+                                im.save(new_img_path)
+
+                            width, height = im.size
                             if width == new_width and height == new_height:
-                                print(join(image_folder, img_file))
+                                non_cropped += 1
+                                print("skip " + join(interest_folder, img_file))
                                 continue
-                            # dimensions
-                            left = (width - new_width) / 2
-                            top = (height - new_height) / 2
-                            right = (width + new_width) / 2
-                            bottom = (height + new_height) / 2
-                            cropped = im.crop((left, top, right, bottom))
-
-                            # im.thumbnail((800, 600), Image.ANTIALIAS)
-
-                            new_img_path = join(output_path, "Cazare_" + city_folder.title()+ "_" + img_file)
+                            cropped = im.crop(((width - new_width) / 2, (height - new_height) / 2,
+                                               (width + new_width) / 2, (height + new_height) / 2))
+                            new_img_path = join(output_path, "Cazare_" + city.name.title() + "_" + img_file)
                             if not exists(dirname(new_img_path)):
                                 try:
                                     makedirs(dirname(new_img_path))
@@ -494,7 +525,7 @@ class ScrapeManager:
                             cropped.save(new_img_path)
                         except Exception as e:
                             print(e)
-
+        print(" {} - were of size 800x600 and were not crpped !".format(non_cropped))
 
 
 PLTFRM = compile(r"^(?:https?://)?(?:www\.)?((?:[\w|-]+\.)*[\w|-]+)(?:\.[a-z]+)")
