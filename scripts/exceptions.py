@@ -3,3 +3,6 @@ class ResourceError(Exception):
 
 class SizeLimitError(Exception):
     pass
+
+class MissingResourceError(Exception):
+    pass

@@ -27,12 +27,12 @@ if __name__ == '__main__':
     maps = MapClient(access, timeout=5, queries_per_second=100, language='ro')
     session = connection.DataBaseView(access)
 
-    manager = ScrapeManager(access, maps, session)
-    manager.fix_images(r"C:\Users\fabbs\Desktop\Churches", r"C:\Users\fabbs\Desktop\Test")
+    # manager = ScrapeManager(access, maps, session)
+    # manager.fix_images(r"C:\Users\fabbs\Desktop\Churches", r"C:\Users\fabbs\Desktop\Test")
 
-    # wp = WordPressManager(access, session)
-    # wp.index_taxonomies()
-    # wp.index_posts()
+    wp = WordPressManager(access, session)
+    wp.index_taxonomies()
+    wp.update_posts("attractions")
     # img = wp.upload_image("C:\\Users\\fabbs\\Desktop\\Churches\\test_2.jpg")
 
     exit()
