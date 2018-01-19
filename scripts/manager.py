@@ -13,8 +13,9 @@ from .util import hash_factors, mk_dir
 from os import listdir, makedirs
 from os.path import basename, splitext, isfile, join, exists, dirname
 from database.mappings import *
-from scripts.exceptions import ResourceError
+from scripts.exceptions import *
 from urllib.parse import urlsplit, parse_qs
+from math import ceil
 from PIL import Image
 
 
@@ -456,13 +457,13 @@ class ScrapeManager:
                     self.connection.post(i_p)
                     self.connection.put(Church, church.id, {"telephone": "moved"})
 
-    def fix_images(self, folder_path, new_path, new_width=800, new_height=600):
+    def fix_images(self, folder_path, new_path):
         if not folder_path:
             raise Exception("No path specified!")
-        non_cropped = 0
+
         counties = self.connection.index(County)
         for county in counties:
-            county_folder = county.name.lower()
+            county_folder = slugify(county.name)
             cities = self.connection.index(City, {"county_id": county.id})
             county_folder = join(folder_path, county_folder)
             for city in cities:
@@ -474,32 +475,40 @@ class ScrapeManager:
                     info = loads(interest.facilities[0].content)
 
                     if info["photo_count"] < 2:
+                        if interest.status != "invalid":
+                            self.connection.put(InterestPoint, interest.id, {"status": "invalid"})
                         continue
 
-                    output_path = join(new_path, county.name.lower(),
+                    output_path = join(new_path, slugify(county.name),
                                        slugify(city.name),
                                        city.name + " - " + interest.title)
                     interest_folder = join(city_folder, city.name + " - " + interest.title)
 
+                    old_struc_folder = join(r"C:\Users\fabbs\Desktop\Churches_2",
+                                            slugify(city.name),
+                                            slugify(city.name + " " + interest.title))
                     if not exists(interest_folder) or not len(listdir(interest_folder)):
-                        old_struc_folder = join(r"C:\Users\fabbs\Desktop\Churches_2",
-                                                slugify(city.name),
-                                                slugify(city.name + " " + interest.title))
                         if not exists(old_struc_folder):
                             try:
                                 print(" No img folder found for interest {}: {} !".format(interest.title, interest.id))
+                                self.connection.put(InterestPoint, interest.id, {"status": "no_imgs"})
                             except Exception as e:
                                 print(e)
                             continue
                         interest_folder, old_struc_folder = old_struc_folder, interest_folder
                         move_flag = True
 
+                    non_cropped = 0
                     for img_file in listdir(interest_folder):
                         try:
+                            if "Cazare" in img_file:
+                                filename = img_file
+                            else:
+                                filename = "Cazare_" + city.name.title() + "_" + img_file
                             im = Image.open(join(interest_folder, img_file))
 
                             if move_flag:
-                                new_img_path = join(old_struc_folder,  "Cazare_" + city.name.title() + "_" + img_file)
+                                new_img_path = join(old_struc_folder,  filename)
                                 if not exists(dirname(new_img_path)):
                                     try:
                                         makedirs(dirname(new_img_path))
@@ -508,24 +517,69 @@ class ScrapeManager:
                                             raise
                                 im.save(new_img_path)
 
-                            width, height = im.size
-                            if width == new_width and height == new_height:
-                                non_cropped += 1
-                                print("skip " + join(interest_folder, img_file))
-                                continue
-                            cropped = im.crop(((width - new_width) / 2, (height - new_height) / 2,
-                                               (width + new_width) / 2, (height + new_height) / 2))
-                            new_img_path = join(output_path, "Cazare_" + city.name.title() + "_" + img_file)
-                            if not exists(dirname(new_img_path)):
-                                try:
-                                    makedirs(dirname(new_img_path))
-                                except OSError as exc:  # Guard against race condition
-                                    if exc.errno != errno.EEXIST:
-                                        raise
-                            cropped.save(new_img_path)
+                            self.resize_and_crop(im, join(output_path, filename))
+
                         except Exception as e:
                             print(e)
-        print(" {} - were of size 800x600 and were not crpped !".format(non_cropped))
+                    if non_cropped >= info["photo_count"] - 1:
+                        self.connection.put(InterestPoint, interest.id, {"status": "invalid_imgs"})
+                    else:
+                        self.connection.put(InterestPoint,
+                                            interest.id,
+                                            {"photos": join(slugify(county.name),
+                                                            slugify(city.name),
+                                                            city.name + " - " + interest.title)})
+                    # exit()
+
+    def resize_and_crop(self, im, output_path, crop_size=(800, 600), limit_size=(500, 500)):
+        """
+        Resize and crop images from center.
+        :param im: sampled image
+        :param output_path: complete folder and file path
+        :param crop_size: tuple with dimensions of crop box
+        :param limit_size: tuple with size limit of sample image
+        """
+
+        try:
+            sample_im = im
+            initial_size = im.size
+
+            if initial_size[0] <= limit_size[0] or initial_size[1] <= limit_size[1]:
+                return
+
+            resize = False
+            ratio = initial_size[0] / initial_size[1]
+
+            width_delta = ceil(ratio * (initial_size[0] - crop_size[0]))
+            height_delta = ceil(ratio * (initial_size[1] - crop_size[1]))
+
+            if width_delta < 0 or height_delta < 0:
+                resize = True
+
+            if ratio < 1:
+                resize_box = (initial_size[0] - 2*width_delta, ceil((initial_size[0] - 2*width_delta)/ratio))
+            elif ratio > 1:
+                resize_box = (ceil((initial_size[1] - 2*width_delta)*ratio), initial_size[1] - 2*height_delta)
+            elif ratio == 1:
+                resize_box = (initial_size[0] + width_delta, initial_size[1] + height_delta)
+
+            if resize:
+                sample_im = sample_im.resize(resize_box, Image.ANTIALIAS)
+
+            width, height = sample_im.size
+
+            cropped_im = sample_im.crop(((width - crop_size[0]) / 2, (height - crop_size[1]) / 2,
+                                         (width + crop_size[0]) / 2, (height + crop_size[1]) / 2))
+            if not exists(dirname(output_path)):
+                try:
+                    makedirs(dirname(output_path))
+                except OSError as exc:  # Guard against race condition
+                    if exc.errno != errno.EEXIST:
+                        raise
+
+            cropped_im.save(output_path)
+        except Exception as e:
+            print(e)
 
 
 PLTFRM = compile(r"^(?:https?://)?(?:www\.)?((?:[\w|-]+\.)*[\w|-]+)(?:\.[a-z]+)")

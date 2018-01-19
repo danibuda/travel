@@ -30,7 +30,6 @@ if __name__ == '__main__':
     manager = ScrapeManager(access, maps, session)
     manager.fix_images(r"C:\Users\fabbs\Desktop\Churches", r"C:\Users\fabbs\Desktop\Test")
 
-
     # wp = WordPressManager(access, session)
     # wp.index_taxonomies()
     # wp.index_posts()
