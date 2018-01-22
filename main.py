@@ -31,7 +31,6 @@ if __name__ == '__main__':
     # manager.fix_images(r"C:\Users\fabbs\Desktop\Churches", r"C:\Users\fabbs\Desktop\Test")
 
     wp = WordPressManager(access, session)
-    wp.index_taxonomies()
     wp.update_posts("attractions")
     # img = wp.upload_image("C:\\Users\\fabbs\\Desktop\\Churches\\test_2.jpg")
 

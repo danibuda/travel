@@ -7,6 +7,57 @@ from os.path import basename, splitext
 from phpserialize import *
 
 
+class CustomFields:
+
+    def __init__(self, field_list, key_association=None):
+        self.list = [{"key": field["key"], "value": field["value"]} for field in field_list]
+        self.key_association = key_association
+
+    def pack(self):
+        result = []
+        invert_key_assoc = {v: k for k, v in self.key_association.items()}
+        for item in self.list:
+            if invert_key_assoc:
+                unpacked_field_key = invert_key_assoc[item["key"]]
+            else:
+                unpacked_field_key = item["key"]
+
+            field_value = item["value"]
+
+            if isinstance(field_value, list):
+                unpacked_field_value = dumps([x.id for x in field_value])
+            else:
+                unpacked_field_value = str(field_value)
+
+            result.append({"key": unpacked_field_key, "value": unpacked_field_value})
+
+        return result
+
+    def unpack(self):
+        result = {}
+        try:
+            for item in self.list:
+                try:
+                    unpacked_field_key = self.key_association[item["key"]]
+                except KeyError:
+                    continue
+
+                field_value = item["value"]
+
+                if field_value.count(";i:") > 1:
+                    unpacked_field_value = loads(bytes(field_value))
+                elif field_value.count(".") == 1 and field_value.replace(".", "").isalnum():
+                    unpacked_field_value = float(field_value)
+                else:
+                    unpacked_field_value = field_value
+
+                result.update({unpacked_field_key: unpacked_field_value})
+        except AttributeError as e:
+            print(e)
+
+        return result
+
+
 class WordPressManager:
     """Manage interest points inside WordPress"""
     def __init__(self, access, connection):
@@ -26,20 +77,26 @@ class WordPressManager:
         for taxonomy in self.client.call(taxonomies.GetTaxonomies()):
             self.taxonomies.update({taxonomy.name: self.client.call(taxonomies.GetTerms(taxonomy.name))})
 
-    def index_posts(self):
+    def get_posts(self, post_type=None):
+        results = []
+        if not post_type:
+            return results
         offset = 0
         increment = 20
-        for post_type in self.post_types:
-            results = []
-            while True:
-                post_filter = {'post_type': post_type, 'number': increment, 'offset': offset}
-                result = self.client.call(posts.GetPosts(post_filter))
-                if len(result) == 0:
-                    break  # no more posts returned
-                for post in result:
-                    results.append(post)
-                offset = offset + increment
-            self.posts.update({post_type: results})
+        while True:
+            post_filter = {'post_type': post_type, 'number': increment, 'offset': offset}
+            result = self.client.call(posts.GetPosts(post_filter))
+            if len(result) == 0:
+                break  # no more posts returned
+            results.extend(result)
+            offset = offset + increment
+        return results
+
+    def index_posts(self, post_type=None):
+        if post_type:
+            self.posts.update({post_type: self.get_posts(post_type)})
+        for some_type in self.post_types:
+            self.posts.update({some_type: self.get_posts(some_type)})
 
     def new_post(self, title, content, tags, attachment_id):
         post = WordPressPost()
@@ -85,9 +142,13 @@ class WordPressManager:
         """
         Updates posts, if post_type is None all posts are updated.
         :param post_type: default is None , post type filter
-        :param mode: default is "wp" updates the Wordpress post, "db" updates the db entry, "hana" updates both.
+        :param mode: default is "wp" updates the Wordpress post,
+                     "db" updates the db entry,
+                     "hana" updates both.
         """
-        if not len(self.posts):
+        if not len(self.posts) and post_type:
+            self.index_posts(post_type)
+        else:
             self.index_posts()
 
         post_list = []
@@ -107,59 +168,56 @@ class WordPressManager:
                 self.update_post_wp(post.id)
                 self.update_post_db(post.id)
 
-    def update_post_wp(self, post_id):
+    def update_post_wp(self, wp_post_id):
         """
         Update post with id in WordPress.
-        :param post_id: post id
+        :param wp_post_id: post id
         """
-        post = self.client.call(posts.GetPost(post_id))
-        if not post:
-            raise ResourceError("Post not found, id: {}.".format(post_id))
+        post = self.client.call(posts.GetPost(wp_post_id))
 
-        lat, long = None, None
-        wp_geo_hash_id = None
-        location_serialized = None
-        for field in post.custom_fields:
-            if field["key"] == "city":
-                location_serialized = field
-            if field["key"] == "geo_hash_id":
-                wp_geo_hash_id = field
-            if field["key"] == "coordinates_lat":
-                lat = float(field["value"])
-            if field["key"] == "coordinates_long":
-                long = float(field["value"])
-        db_post = self.connection.get(InterestPoint, {"latitude": lat, "longitude": long})
+        if not post:
+            raise ResourceError("Post not found, id: {}.".format(wp_post_id))
+
+        key_assoc = {"city": "city_id", "coordinates_lat": "latitude", "coordinates_long": "longitude",
+                     "geo_hash_id": "geo_hash_id", "rate": "rate", "place_id": "place_id",
+                     "address": "address_coord"}
+        post_custom_fields = CustomFields(post.custom_fields, key_assoc)
+        custom_fields_unpacked = post_custom_fields.unpack()
+
+        try:
+            location = []
+            location_unserialized = custom_fields_unpacked["city_id"]
+            for loc in location_unserialized:
+                term = self.client.call(taxonomies.GetTerm("locations", int(loc)))
+                location.append(term)
+                break
+        except KeyError:
+            pass
+
+        db_post = self.connection.get(InterestPoint, {"latitude": custom_fields_unpacked["latitude"],
+                                                      "longitude": custom_fields_unpacked["longitude"]})
         if not db_post:
             db_post = self.connection.get(InterestPoint, {"title": post.title})
+
         if not db_post:
             raise MissingResourceError("InterestPoint not found for post with id: {}.".format(post.id))
 
+        dict_post = post.__dict__()
+
+        post_diff = self.prejudice_diff(post, db_post)
+
         new_post_data = WordPressPost()
-
-        if wp_geo_hash_id["value"] != db_post.geo_hash_id:
-            wp_geo_hash_id["value"] = db_post.geo_hash_id
-            new_post_data.custom_fields = [wp_geo_hash_id]
-
-        location = []
-        location_unserialized = loads(bytes(location_serialized["value"], 'utf-8'))
-        for loc in location_unserialized:
-            for term in self.taxonomies["locations"]:
-                if term.id == str(location_unserialized[loc]):
-                    location.append(term)
-                    break
-
-        if db_post.city.name not in location:
-            city_term = self.find_term(db_post.city.name, "locations")
-            location[2] = city_term
-            location_serialized["value"] = dumps([x.id for x in location])
-            new_post_data.custom_fields.append(location_serialized)
+        new_post_data.custom_fields = []
 
         self.client.call(posts.EditPost(post.id, new_post_data))
         exit()
 
-    def update_post_db(self, post_id):
+    def update_post_db(self, db_post_id):
         """
         Update post with id in database.
-        :param post_id: post id
+        :param db_post_id: post id
         """
+        pass
+
+    def prejudice_diff(self, wp_post, db_post):
         pass
